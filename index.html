@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Chat Criptata con Firebase</title>
+<style>
+  body { font-family: Arial, sans-serif; max-width: 600px; margin: 20px auto; }
+  #messages { border: 1px solid #ccc; height: 300px; overflow-y: scroll; padding: 10px; margin-bottom: 10px; }
+  #input { width: 80%; }
+  #send { width: 18%; }
+</style>
+</head>
+<body>
+
+<h2>Chat Criptata</h2>
+
+<div id="messages"></div>
+
+<input id="input" autocomplete="off" placeholder="Scrivi messaggio..." />
+<button id="send">Invia</button>
+
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+<script>
+  // Configura Firebase (sostituisci con i tuoi dati)
+  const firebaseConfig = {
+    apiKey: "API_KEY",
+    authDomain: "chat-criptata.firebaseapp.com",
+    projectId: "chat-criptata",
+    storageBucket: "chat-criptata.appspot.com",
+    messagingSenderId: "XXXX",
+    appId: "1:XXXX:web:XXXX"
+  };
+
+  firebase.initializeApp(firebaseConfig);
+  const db = firebase.firestore();
+
+  // Chiave di crittografia (per ora fissa, poi puoi farla dinamica)
+  const keyString = 'la_tua_chiave_segretissima1234567890!'; 
+
+  async function getKey() {
+    const enc = new TextEncoder();
+    const keyMaterial = await window.crypto.subtle.importKey(
+      "raw",
+      enc.encode(keyString),
+      {name: "PBKDF2"},
+      false,
+      ["deriveKey"]
+    );
+
+    return window.crypto.subtle.deriveKey(
+      {
+        "name": "PBKDF2",
+        salt: enc.encode("salt_chat_123"),
+        iterations: 100000,
+        hash: "SHA-256"
+      },
+      keyMaterial,
+      {name: "AES-GCM", length: 256},
+      false,
+      ["encrypt", "decrypt"]
+    );
+  }
+
+  async function encrypt(text) {
+    const key = await getKey();
+    const iv = window.crypto.getRandomValues(new Uint8Array(12));
+    const encoder = new TextEncoder();
+    const data = encoder.encode(text);
+
+    const encrypted = await window.crypto.subtle.encrypt(
+      {name: "AES-GCM", iv: iv},
+      key,
+      data
+    );
+
+    // concatena IV + encrypted e codifica in base64
+    const buffer = new Uint8Array(iv.byteLength + encrypted.byteLength);
+    buffer.set(iv, 0);
+    buffer.set(new Uint8Array(encrypted), iv.byteLength);
+    return btoa(String.fromCharCode(...buffer));
+  }
+
+  async function decrypt(cipherText) {
+    const key = await getKey();
+    const data = Uint8Array.from(atob(cipherText), c => c.charCodeAt(0));
+    const iv = data.slice(0, 12);
+    const encrypted = data.slice(12);
+
+    const decrypted = await window.crypto.subtle.decrypt(
+      {name: "AES-GCM", iv: iv},
+      key,
+      encrypted
+    );
+
+    const decoder = new TextDecoder();
+    return decoder.decode(decrypted);
+  }
+
+  const messagesDiv = document.getElementById('messages');
+  const input = document.getElementById('input');
+  const sendBtn = document.getElementById('send');
+
+  sendBtn.onclick = async () => {
+    const msg = input.value.trim();
+    if (!msg) return;
+    const encryptedMsg = await encrypt(msg);
+
+    // salva messaggio criptato su Firestore
+    db.collection('messages').add({
+      text: encryptedMsg,
+      timestamp: Date.now()
+    });
+
+    input.value = '';
+  };
+
+  // Ascolta nuovi messaggi
+  db.collection('messages').orderBy('timestamp').onSnapshot(async snapshot => {
+    messagesDiv.innerHTML = '';
+    for (const doc of snapshot.docs) {
+      try {
+        const decrypted = await decrypt(doc.data().text);
+        const el = document.createElement('div');
+        el.textContent = decrypted;
+        messagesDiv.appendChild(el);
+      } catch {
+        // messaggio non decriptabile
+      }
+    }
+    messagesDiv.scrollTop = messagesDiv.scrollHeight;
+  });
+</script>
+
+</body>
+</html>
